@@ -1,100 +1,148 @@
-#include <jni.h>
+/*
+ * My Zygisk Module - Step 1
+ * Basic app detection with config file
+ */
+
+#include "../include/zygisk.h"
 #include <string>
 #include <fstream>
 #include <sstream>
 #include <unistd.h>
 #include <sys/stat.h>
 #include <time.h>
-#include <vector>
+#include <cstring>
 
-// Zygisk API headers
-#include <zygisk.h>
-#include <logging.h>
+#define MODULE_TAG "MyModule"
+#define CONFIG_DIR "/data/local/tmp/mymod"
+#define CONFIG_FILE "/data/local/tmp/mymod/app.txt"
+#define LOG_FILE "/data/local/tmp/mymod/detected.txt"
 
 using namespace zygisk;
 
-#define MODULE_TAG "MyModule"
-#define CONFIG_PATH "/data/local/tmp/mymod/app.txt"
-#define LOG_PATH "/data/local/tmp/mymod/detected.txt"
-
 class MyModule : public ModuleBase {
 public:
-    void onLoad(api::Api *api, JNIEnv *env) override {
+    void onLoad(Api *api, JNIEnv *env) override {
         this->api = api;
         this->env = env;
         
-        LOGD("%s: onLoad called - module loaded successfully!", MODULE_TAG);
-        LOGD("%s: Zygisk API version: %d", MODULE_TAG, api->getApiVersion());
+        LOGD("========================================");
+        LOGD("MyModule: v1.0.0 loaded successfully!");
+        LOGD("MyModule: Zygisk API version: %d", api->getApiVersion());
+        LOGD("MyModule: Process: %d", getpid());
+        LOGD("========================================");
+        
+        // Ensure config directory exists
+        mkdir(CONFIG_DIR, 0755);
     }
 
-    void preAppSpecialize(api::AppSpecializeArgs *args) override {
+    void preAppSpecialize(AppSpecializeArgs *args) override {
+        if (!args || !args->package_name) {
+            LOGD("MyModule: preAppSpecialize called with null args");
+            return;
+        }
+        
+        // Get package name
         const char *packageName = env->GetStringUTFChars(args->package_name, nullptr);
+        if (!packageName) {
+            LOGD("MyModule: Could not get package name");
+            return;
+        }
         
-        LOGD("%s: preAppSpecialize for package: %s", MODULE_TAG, packageName);
-        LOGD("%s: Process UID: %d, PID: %d", MODULE_TAG, args->uid, getpid());
+        LOGD("========================================");
+        LOGD("MyModule: preAppSpecialize called");
+        LOGD("MyModule: Package: %s", packageName);
+        LOGD("MyModule: UID: %d", args->uid);
+        LOGD("MyModule: PID: %d", getpid());
         
-        std::string targetPackage = readTargetPackage();
+        // Read target package from config
+        std::string targetPackage = readConfigFile();
         
         if (!targetPackage.empty()) {
-            LOGD("%s: Target package from file: %s", MODULE_TAG, targetPackage.c_str());
+            LOGD("MyModule: Target package from config: %s", targetPackage.c_str());
             
-            if (packageName == targetPackage) {
-                LOGD("🟢 %s: TARGET APP DETECTED: %s", MODULE_TAG, packageName);
-                LOGD("🟢 %s: UID: %d, PID: %d", MODULE_TAG, args->uid, getpid());
+            // Check if this is our target
+            if (strcmp(packageName, targetPackage.c_str()) == 0) {
+                LOGD("🟢🟢🟢 TARGET APP DETECTED! 🟢🟢🟢");
+                LOGD("🟢 Package: %s", packageName);
+                LOGD("🟢 UID: %d", args->uid);
+                LOGD("🟢 PID: %d", getpid());
                 
+                // Write detection log
                 writeDetectionLog(packageName, args->uid);
-                
-                // Store detection state for postAppSpecialize
                 targetDetected = true;
             } else {
-                LOGD("❌ %s: Not target: %s (expected: %s)", 
-                     MODULE_TAG, packageName, targetPackage.c_str());
+                LOGD("❌ Not target: %s (expected: %s)", 
+                     packageName, targetPackage.c_str());
                 targetDetected = false;
             }
         } else {
-            LOGD("⚠️ %s: No target package configured - watching all apps", MODULE_TAG);
+            LOGD("⚠️ No target package configured in %s", CONFIG_FILE);
+            LOGD("⚠️ Watching all apps (no filtering)");
             targetDetected = false;
         }
         
         env->ReleaseStringUTFChars(args->package_name, packageName);
+        LOGD("========================================");
     }
 
-    void postAppSpecialize(const api::AppSpecializeArgs *args) override {
-        const char *packageName = env->GetStringUTFChars(args->package_name, nullptr);
+    void postAppSpecialize(const AppSpecializeArgs *args) override {
+        if (!args || !args->package_name) {
+            LOGD("MyModule: postAppSpecialize called with null args");
+            return;
+        }
         
-        LOGD("%s: postAppSpecialize for: %s", MODULE_TAG, packageName);
-        LOGD("%s: Now inside app process - PID: %d", MODULE_TAG, getpid());
+        const char *packageName = env->GetStringUTFChars(args->package_name, nullptr);
+        if (!packageName) return;
+        
+        LOGD("MyModule: postAppSpecialize for: %s", packageName);
+        LOGD("MyModule: Running in app process - PID: %d", getpid());
         
         if (targetDetected) {
-            LOGD("✅ %s: Target app %s is running!", MODULE_TAG, packageName);
-            // Here we can add more functionality in later steps
+            LOGD("✅✅✅ Target app %s is running!", packageName);
+            LOGD("✅✅✅ Module is active in the app process");
         }
         
         env->ReleaseStringUTFChars(args->package_name, packageName);
     }
 
 private:
-    api::Api *api;
-    JNIEnv *env;
+    Api *api = nullptr;
+    JNIEnv *env = nullptr;
     bool targetDetected = false;
 
-    std::string readTargetPackage() {
-        std::ifstream file(CONFIG_PATH);
+    std::string readConfigFile() {
+        std::ifstream file(CONFIG_FILE);
         
         if (!file.is_open()) {
-            LOGD("⚠️ %s: Could not open config file: %s", MODULE_TAG, CONFIG_PATH);
+            LOGD("⚠️ Could not open config file: %s", CONFIG_FILE);
+            LOGD("⚠️ Create file with: echo 'com.example.app' > %s", CONFIG_FILE);
             return "";
         }
         
         std::string line;
         if (std::getline(file, line)) {
+            // Trim whitespace
             size_t start = line.find_first_not_of(" \t\n\r");
             if (start == std::string::npos) return "";
             
             size_t end = line.find_last_not_of(" \t\n\r");
             if (end == std::string::npos) return "";
             
-            return line.substr(start, end - start + 1);
+            std::string result = line.substr(start, end - start + 1);
+            
+            // Remove comments
+            size_t commentPos = result.find('#');
+            if (commentPos != std::string::npos) {
+                result = result.substr(0, commentPos);
+                // Trim again
+                start = result.find_first_not_of(" \t\n\r");
+                if (start == std::string::npos) return "";
+                end = result.find_last_not_of(" \t\n\r");
+                if (end == std::string::npos) return "";
+                result = result.substr(start, end - start + 1);
+            }
+            
+            return result;
         }
         
         return "";
@@ -102,33 +150,44 @@ private:
 
     void writeDetectionLog(const char *packageName, uid_t uid) {
         // Ensure directory exists
-        std::string dirPath = "/data/local/tmp/mymod";
-        mkdir(dirPath.c_str(), 0755);
+        mkdir(CONFIG_DIR, 0755);
         
-        std::ofstream file(LOG_PATH);
+        std::ofstream file(LOG_FILE);
         
-        if (file.is_open()) {
-            time_t now = time(nullptr);
-            char timeStr[64];
-            strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", localtime(&now));
-            
-            file << "=== DETECTED TARGET APP ===" << std::endl;
-            file << "Package: " << packageName << std::endl;
-            file << "PID: " << getpid() << std::endl;
-            file << "UID: " << uid << std::endl;
-            file << "Timestamp: " << timeStr << std::endl;
-            file << "===========================" << std::endl;
-            file.close();
-            
-            LOGD("✅ %s: Wrote detection log to: %s", MODULE_TAG, LOG_PATH);
-            LOGD("✅ %s: Detection log contents:", MODULE_TAG);
-            LOGD("✅ %s: Package: %s", MODULE_TAG, packageName);
-            LOGD("✅ %s: PID: %d", MODULE_TAG, getpid());
-        } else {
-            LOGD("⚠️ %s: Could not write detection log to: %s", MODULE_TAG, LOG_PATH);
+        if (!file.is_open()) {
+            LOGD("⚠️ Could not write detection log to: %s", LOG_FILE);
+            return;
+        }
+        
+        time_t now = time(nullptr);
+        char timeStr[64];
+        struct tm *tm_info = localtime(&now);
+        strftime(timeStr, sizeof(timeStr), "%Y-%m-%d %H:%M:%S", tm_info);
+        
+        file << "========================================" << std::endl;
+        file << "         TARGET APP DETECTED           " << std::endl;
+        file << "========================================" << std::endl;
+        file << "Package:  " << packageName << std::endl;
+        file << "PID:      " << getpid() << std::endl;
+        file << "UID:      " << uid << std::endl;
+        file << "Timestamp: " << timeStr << std::endl;
+        file << "========================================" << std::endl;
+        file.close();
+        
+        LOGD("✅ Detection log written to: %s", LOG_FILE);
+        
+        // Read back to verify
+        std::ifstream checkFile(LOG_FILE);
+        if (checkFile.is_open()) {
+            std::string line;
+            LOGD("✅ Detection log contents:");
+            while (std::getline(checkFile, line)) {
+                LOGD("   %s", line.c_str());
+            }
+            checkFile.close();
         }
     }
 };
 
-// Zygisk entry point
+// Zygisk entry point - required for all modules
 REGISTER_ZYGISK_MODULE(MyModule)
