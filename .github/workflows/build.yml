@@ -1,0 +1,108 @@
+name: Build Zygisk Module
+
+on:
+  push:
+    branches: [ main, master, develop ]
+    paths-ignore:
+      - 'README.md'
+      - 'docs/**'
+      - 'test_data/**'
+  pull_request:
+    branches: [ main, master ]
+  release:
+    types: [ created ]
+  workflow_dispatch:  # Allow manual trigger
+
+jobs:
+  build:
+    name: Build Module
+    runs-on: ubuntu-latest
+    
+    strategy:
+      matrix:
+        arch: [arm64-v8a, armeabi-v7a, x86_64, x86]
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        with:
+          submodules: recursive
+          
+      - name: Setup NDK
+        uses: nttld/setup-ndk@v1
+        with:
+          ndk-version: r26c
+          add-to-path: false
+          
+      - name: Setup Zygisk headers
+        run: |
+          git clone --depth 1 https://github.com/Dr-TSNG/ZygiskNext.git
+          export ZYGISK_INCLUDE=$(pwd)/ZygiskNext/include
+          echo "ZYGISK_INCLUDE=$ZYGISK_INCLUDE" >> $GITHUB_ENV
+          
+      - name: Build module for ${{ matrix.arch }}
+        run: |
+          chmod +x scripts/build.sh
+          ./scripts/build.sh ${{ matrix.arch }}
+        env:
+          ANDROID_NDK_HOME: ${{ env.ANDROID_NDK_HOME }}
+          
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mymod-${{ matrix.arch }}
+          path: |
+            module/zygisk/${{ matrix.arch }}/mymod.so
+            module/module.prop
+            module/config
+          retention-days: 30
+          
+  package:
+    name: Create Release Package
+    needs: build
+    runs-on: ubuntu-latest
+    if: github.event_name == 'release' || github.event_name == 'push'
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          
+      - name: Create module structure
+        run: |
+          mkdir -p mymod/zygisk
+          
+          # Copy all architectures
+          cp -r artifacts/mymod-arm64-v8a/* mymod/zygisk/arm64-v8a/ 2>/dev/null || true
+          cp -r artifacts/mymod-armeabi-v7a/* mymod/zygisk/armeabi-v7a/ 2>/dev/null || true
+          cp -r artifacts/mymod-x86_64/* mymod/zygisk/x86_64/ 2>/dev/null || true
+          cp -r artifacts/mymod-x86/* mymod/zygisk/x86/ 2>/dev/null || true
+          
+          # Copy module files
+          cp module/module.prop mymod/
+          cp module/config mymod/
+          
+          # Create ZIP
+          cd mymod
+          zip -r ../mymod-release.zip *
+          
+      - name: Upload release package
+        uses: actions/upload-artifact@v4
+        with:
+          name: mymod-release
+          path: mymod-release.zip
+          
+      - name: Attach to release
+        if: github.event_name == 'release'
+        uses: actions/upload-release-asset@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          upload_url: ${{ github.event.release.upload_url }}
+          asset_path: ./mymod-release.zip
+          asset_name: mymod-${{ github.ref_name }}.zip
+          asset_content_type: application/zip
